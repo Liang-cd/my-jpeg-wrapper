@@ -1,0 +1,15 @@
+name: C wrapper tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sanitize: [OFF, ON]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DWITH_SIMD=OFF -DJPEGW_SANITIZE=${{ matrix.sanitize }}
+      - run: cmake --build build -j 2
+      - run: ctest --test-dir build --output-on-failure
