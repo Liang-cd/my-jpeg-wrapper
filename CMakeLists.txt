@@ -3,7 +3,6 @@ project(my_jpeg_wrapper VERSION 1.0.0 LANGUAGES C)
 
 option(JPEGW_USE_BUNDLED "Build bundled libjpeg-turbo" ON)
 option(JPEGW_BUILD_TESTS "Build wrapper tests" ON)
-option(WITH_SIMD "Enable libjpeg-turbo SIMD (requires NASM on x86)" ON)
 option(JPEGW_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 if(JPEGW_SANITIZE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -24,7 +23,8 @@ if(JPEGW_USE_BUNDLED)
     endif()
     set(turbo_args
         -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_TURBOJPEG=ON
-        -DWITH_SIMD=${WITH_SIMD}
+        # 組み込み向けに、上流の設定だけで SIMD・アセンブリ最適化を無効化します。
+        -DWITH_SIMD=OFF -DREQUIRE_SIMD=OFF
         -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         "-DCMAKE_C_FLAGS=${CMAKE_C_FLAGS}")

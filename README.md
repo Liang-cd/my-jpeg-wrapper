@@ -62,10 +62,10 @@ imageTemp.pixels = NULL;
 
 ## 构建和测试
 
-需要 C 编译器、CMake（建议 3.18+；上游平台要求见其 BUILDING.md）和构建工具。x86 SIMD 默认开启，推荐安装 NASM；没有 NASM 时可显式关闭 SIMD：
+需要 C 编译器、CMake（建议 3.18+；上游平台要求见其 BUILDING.md）和构建工具。内置 libjpeg-turbo 固定使用 `WITH_SIMD=OFF`、`REQUIRE_SIMD=OFF` 构建，使用普通 C 解码路径，不编译上游 SIMD/汇编加速模块（包括 x86 SSE/AVX、Arm NEON、RISC-V RVV 等），无需 NASM。配置仅在 wrapper 的构建脚本中完成，不修改上游源码。
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DWITH_SIMD=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
@@ -77,14 +77,14 @@ add_subdirectory(path/to/my-jpeg-wrapper)
 target_link_libraries(your_app PRIVATE jpeg_wrapper)
 ```
 
-`JPEGW_BUILD_TESTS=OFF` 可关闭测试；`JPEGW_USE_BUNDLED=OFF` 可改用系统已安装的 `turbojpeg.h` 和 `libturbojpeg`（TurboJPEG 2.x API 或兼容的 3.x）。链接的库是 **turbojpeg**，不是仅 `jpeg`。
+`JPEGW_BUILD_TESTS=OFF` 可关闭测试；`JPEGW_USE_BUNDLED=OFF` 可改用系统已安装的 `turbojpeg.h` 和 `libturbojpeg`（TurboJPEG 2.x API 或兼容的 3.x）。链接的库是 **turbojpeg**，不是仅 `jpeg`。系统库模式无法改变现有二进制的编译选项，调用方必须自行确认该库也以 `WITH_SIMD=OFF` 构建。
 
-交叉编译时传入绝对路径的 `-DCMAKE_TOOLCHAIN_FILE=...`，该文件也会传给上游构建；同时用 `-DJPEGW_BUILD_TESTS=OFF` 关闭宿主运行测试。工具链中使用绝对路径定位资源。上游其他平台配置见 [BUILDING.md](third_party/libjpeg-turbo/BUILDING.md)。
+交叉编译时传入绝对路径的 `-DCMAKE_TOOLCHAIN_FILE=...`，该文件也会传给上游构建；同时用 `-DJPEGW_BUILD_TESTS=OFF` 关闭宿主运行测试。工具链中使用绝对路径定位资源，并选择目标 CPU/ABI 对应的编译选项。关闭上游 SIMD 不会覆盖编译器自身的自动向量化或工具链中的 `-march`、`-mcpu`、FPU/浮点 ABI 设置；若芯片不支持相关指令，需要在工具链中一并限制。不要为目标设备使用宿主机的 `-march=native`。上游其他平台配置见 [BUILDING.md](third_party/libjpeg-turbo/BUILDING.md)。
 
 GCC/Clang 内存检查：
 
 ```sh
-cmake -S . -B build-asan -DWITH_SIMD=OFF -DJPEGW_SANITIZE=ON
+cmake -S . -B build-asan -DJPEGW_SANITIZE=ON
 cmake --build build-asan -j
 ctest --test-dir build-asan --output-on-failure
 ```

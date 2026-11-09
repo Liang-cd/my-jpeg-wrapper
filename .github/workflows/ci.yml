@@ -10,6 +10,11 @@ jobs:
         sanitize: [OFF, ON]
     steps:
       - uses: actions/checkout@v4
-      - run: cmake -S . -B build -DWITH_SIMD=OFF -DJPEGW_SANITIZE=${{ matrix.sanitize }}
+      - run: cmake -S . -B build -DJPEGW_SANITIZE=${{ matrix.sanitize }}
       - run: cmake --build build -j 2
+      - name: Verify portable C decoder
+        run: |
+          test "$(sed -n 's/^WITH_SIMD:BOOL=//p' build/libjpeg-turbo-build/CMakeCache.txt)" = "OFF"
+          test "$(sed -n 's/^REQUIRE_SIMD:BOOL=//p' build/libjpeg-turbo-build/CMakeCache.txt)" = "OFF"
+          ! grep -Eq '^#define[[:space:]]+WITH_SIMD[[:space:]]+1' build/libjpeg-turbo-build/jconfig.h
       - run: ctest --test-dir build --output-on-failure
