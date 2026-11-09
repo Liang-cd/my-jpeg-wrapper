@@ -11,9 +11,9 @@ target_compile_features(jpeg_wrapper PUBLIC c_std_99)
 target_include_directories(jpeg_wrapper
     PUBLIC "${JPEGW_ROOT}/include"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/config"
-            "${JPEGW_ROOT}/third_party/libjpeg-turbo/src")
+            "${JPEGW_ROOT}/third_party/libjpeg")
 # OS の環境変数 API を不要にします。画像ファイル形式のマクロは定義しません。
-target_compile_definitions(jpeg_wrapper PRIVATE NO_GETENV NO_PUTENV)
+target_compile_definitions(jpeg_wrapper PRIVATE NO_GETENV)
 
 # ホストでの確認専用。組み込み向けライブラリのビルドでは不要です。
 option(JPEGW_MINIMAL_TESTS "Build host-side wrapper tests" OFF)
@@ -21,8 +21,7 @@ if(JPEGW_MINIMAL_TESTS)
     enable_testing()
     add_executable(jpeg_wrapper_test "${JPEGW_ROOT}/tests/test_jpeg_wrapper.c")
     target_include_directories(jpeg_wrapper_test PRIVATE
-        "${JPEGW_ROOT}/third_party/libjpeg-turbo/src")
-    target_compile_definitions(jpeg_wrapper_test PRIVATE JPEGW_TEST_FIXTURES)
+        "${JPEGW_ROOT}/third_party/libjpeg")
     target_link_libraries(jpeg_wrapper_test PRIVATE jpeg_wrapper)
     add_test(NAME jpeg_wrapper_minimal_test COMMAND jpeg_wrapper_test)
     # ランタイム依存を調べるため、stdio を使わない小さな実行ファイルもリンクします。

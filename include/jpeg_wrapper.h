@@ -2,7 +2,7 @@
  * @file jpeg_wrapper.h
  * @brief メモリ上の JPEG を RGB/RGBA へ展開する読み取り専用 API。
  * @details 出力バッファの確保・解放は呼び出し元が管理します。
- * libjpeg-turbo 内部では標準ヒープによるメモリ確保が発生します。
+ * libjpeg 内部では標準ヒープによるメモリ確保が発生します。
  * 各呼び出しは独立したデコーダを使うため、独立したバッファで並行実行できます。
  */
 #ifndef JPEG_WRAPPER_H
@@ -26,7 +26,7 @@ typedef enum {
     JPEGW_OK = 0,           /**< 正常終了。 */
     JPEGW_INVALID_ARGUMENT, /**< NULL、入力長 0、または不正な出力形式。 */
     JPEGW_INVALID_JPEG,     /**< JPEG の解析・展開に失敗。警告も失敗として扱います。 */
-    JPEGW_UNSUPPORTED,      /**< 対応外の色空間（CMYK/YCCK など）や、最小構成での非対応精度。 */
+    JPEGW_UNSUPPORTED,      /**< 対応外の色空間（CMYK/YCCK など）や、非対応のビット精度。 */
     JPEGW_SIZE_OVERFLOW,    /**< 入出力サイズがプラットフォームの上限を超過。 */
     JPEGW_BUFFER_TOO_SMALL, /**< 出力バッファの容量不足。 */
     JPEGW_DECODER_ERROR     /**< デコーダの初期化に失敗。 */
@@ -58,7 +58,7 @@ typedef struct {
  * @return JPEGW_OK、または jpegw_status のエラー値。
  * @retval JPEGW_INVALID_ARGUMENT 必須ポインタ、入力長、または mode が不正。
  * @retval JPEGW_INVALID_JPEG ヘッダの解析に失敗。
- * @retval JPEGW_UNSUPPORTED 色空間に非対応。最小構成では 8 ビット以外も拒否。
+ * @retval JPEGW_UNSUPPORTED 色空間または精度に非対応。8 ビット以外は拒否。
  * @retval JPEGW_SIZE_OVERFLOW 必要なサイズが表現可能範囲を超過。
  * @retval JPEGW_DECODER_ERROR デコーダを生成できない。
  * @pre jpeg_data と info の領域は重複してはいけません。
@@ -66,7 +66,6 @@ typedef struct {
  *       jpegw_read() が破損データや非対応のビット深度により失敗する場合があります。
  * @note 8 ビットのグレースケール、RGB、YCbCr とプログレッシブ JPEG に対応。
  *       EXIF 回転や ICC 色変換は適用しません。
- * @note minimal/ の実装は同じ公開 API を使用します。通常実装と同時にリンクしないでください。
  */
 jpegw_status jpegw_get_info(const void *jpeg_data, size_t jpeg_size,
                             jpegw_mode mode, jpegw_info *info);
@@ -81,9 +80,9 @@ jpegw_status jpegw_get_info(const void *jpeg_data, size_t jpeg_size,
  * @param[in] pixels_capacity pixels に書き込み可能なバイト数。
  * @return JPEGW_OK、または jpegw_status のエラー値。
  * @retval JPEGW_BUFFER_TOO_SMALL 必要容量に満たない。ピクセルは書き込みません。
- * @retval JPEGW_INVALID_JPEG データ破損、切り詰め、非対応ビット深度、または警告。
+ * @retval JPEGW_INVALID_JPEG データ破損、切り詰め、または警告。
  * @retval JPEGW_INVALID_ARGUMENT 必須ポインタ、入力長、または mode が不正。
- * @retval JPEGW_UNSUPPORTED 色空間に非対応。最小構成では 8 ビット以外も拒否。
+ * @retval JPEGW_UNSUPPORTED 色空間または精度に非対応。8 ビット以外は拒否。
  * @retval JPEGW_SIZE_OVERFLOW 必要なサイズが表現可能範囲を超過。
  * @retval JPEGW_DECODER_ERROR デコーダを生成できない。
  * @pre jpeg_data、pixels、image の領域は互いに重複してはいけません。

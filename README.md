@@ -1,12 +1,8 @@
-# my-jpeg-wrapper
+# my-jpeg-wrapper — standard-libjpeg
 
-C99 编写的 libjpeg-turbo 只读 wrapper。输入内存中的 JPEG，输出连续排列的 RGB / RGBA 像素。输出内存完全由调用方管理，可以使用 `malloc/free` 或嵌入式专用分配器。
+本分支使用 **Independent JPEG Group（IJG）官方 libjpeg 10**，通过标准 libjpeg API 实现 JPEG 内存读取。对外保持原有 C API：`jpegw_get_info()`、`jpegw_read()`、`jpegw_status_string()`。
 
-仓库已包含官方 **libjpeg-turbo 3.2.1** 完整源码（`third_party/libjpeg-turbo`），无需另外下载。上游版本、提交号和许可证位置见 [third_party/README.md](third_party/README.md)。
-
-## 嵌入式无 CMake 移植
-
-请优先使用 [minimal/README.md](minimal/README.md) 中的独立最简工程：提供完整的 56 个源文件清单、3 个 include 路径、所需预定义宏、固定配置头、GNU Makefile 和最简 CMake。该后端直接调用 libjpeg 解码器，不依赖 TurboJPEG、编码器、PNG/zlib、SIMD 或文件系统；对外的 `jpegw_*` API 不变。具体差异与运行库要求见该文档。
+依赖的完整官方源码位于 `third_party/libjpeg`，未做修改。来源、版本、下载校验值与许可证位置见 [third_party/README.md](third_party/README.md)。
 
 ## 使用
 
@@ -14,87 +10,92 @@ C99 编写的 libjpeg-turbo 只读 wrapper。输入内存中的 JPEG，输出连
 #include "jpeg_wrapper.h"
 #include <stdlib.h>
 
-/* jpeg_data 指向 JPEG 编码数据，jpeg_size 为这段数据的实际字节长度。 */
+/* jpeg_data 为 JPEG 数据，jpeg_size 为它的实际字节长度。 */
 jpegw_image imageTemp = {0};
 jpegw_info info;
-jpegw_mode mode = JPEGW_RGBA; /* 或 JPEGW_RGB */
-jpegw_status rc = jpegw_get_info(jpeg_data, jpeg_size, mode, &info);
+jpegw_status rc = jpegw_get_info(jpeg_data, jpeg_size, JPEGW_RGBA, &info);
+if (rc != JPEGW_OK)
+    return;
+
+/* 根据嵌入式平台需要替换申请/释放函数，并在此检查尺寸与容量上限。 */
+void *pixels = malloc(info.pixels_size);
+if (!pixels)
+    return;
+
+rc = jpegw_read(&imageTemp, jpeg_data, jpeg_size, JPEGW_RGBA,
+                pixels, info.pixels_size);
 if (rc != JPEGW_OK) {
-    /* 用 jpegw_status_string(rc) 获取错误描述。 */
+    free(pixels);
     return;
 }
-
-/* 可先检查 info.width / height / pixels_size，限制应用允许的图片大小。 */
-unsigned char *buffer = malloc(info.pixels_size); /* 换成你的专用分配器 */
-if (!buffer)
-    return;
-
-rc = jpegw_read(&imageTemp, jpeg_data, jpeg_size, mode,
-                buffer, info.pixels_size);
-if (rc != JPEGW_OK) {
-    free(buffer);
-    return;
-}
-
-/* imageTemp.width / height / pixels / mode 已填充。
- * (x,y) 像素地址：imageTemp.pixels + y * info.stride + x * mode
- * mode 的数值为通道数：RGB=3，RGBA=4。
- */
-/* ...使用像素... */
-free(imageTemp.pixels); /* 配对使用你自己的释放函数 */
+/* 使用 imageTemp.width / height / pixels / mode。 */
+free(imageTemp.pixels);
 imageTemp.pixels = NULL;
 ```
 
-可编译的辅助函数见 [examples/decode.c](examples/decode.c)。示例使用 `malloc`；核心 API 不申请或释放输出像素内存。
+可编译的函数示例见 [examples/decode.c](examples/decode.c)。必须传入 JPEG 指针和有效数据字节长度；宽高由 JPEG 头解析，指针本身不包含数据长度。
 
-**必须传 JPEG 数据长度。** 宽高可以从 JPEG 头自动解析，但 C 指针不携带缓冲区长度，不能安全地仅凭指针扫描到图片结尾；不要用 `strlen`。长度应由文件大小、网络响应或存储记录提供。
+- RGB：每像素 `R G B`，各通道 1 Byte；RGBA：`R G B A`，A 固定为 255。
+- 像素按从上到下、从左到右连续存放，无行填充。
+- 标准 libjpeg 解码为 `JCS_RGB`。RGBA 在输出缓冲区中逐行从后向前原地扩展，不使用 TurboJPEG API 或 `JCS_EXT_*` 扩展，也不额外申请整幅 RGB 缓冲区。
+- 支持 8 位灰度、RGB、YCbCr 和渐进式 JPEG。CMYK/YCCK、其他精度返回 `JPEGW_UNSUPPORTED`。不处理 EXIF 旋转或 ICC 色彩管理。
+- 查询只解析头，查询成功不代表整个 JPEG 完整。损坏、截断和库警告在正式读取时返回失败，不补造结束标记。
+- 失败时结果结构体不变；输出像素可能已被部分写入，不能使用。容量不足时不写像素。
+- wrapper 不释放旧的 `imageTemp.pixels`。输入、输出和结果结构体不能重叠；独立调用使用独立解码上下文，可以并发。
 
-## API 约定
+## 嵌入式移植
 
-- `jpegw_get_info(data, length, mode, &info)`：读取头，返回宽高、`stride` 和 `pixels_size`。它不会验证整个压缩数据流，查询成功后正式读取仍可能失败。
-- `jpegw_read(&imageTemp, data, length, mode, buffer, capacity)`：重新解析尺寸，检查容量后解码。成功时 `imageTemp.pixels == buffer`，wrapper 不持有该内存。重复读取不会释放旧的 `imageTemp.pixels`，调用方负责其生命周期。
-- 每通道 1 Byte，无行填充；从上到下、从左到右排列。RGB 为 `R G B R G B ...`，RGBA 为 `R G B A ...`，A 固定为 255（JPEG 无透明通道）。
-- 支持 8 位灰度、RGB、YCbCr JPEG，以及渐进式 JPEG；灰度扩展为 RGB/RGBA。CMYK/YCCK 返回 `JPEGW_UNSUPPORTED`，不进行未经色彩管理的自动转换。其他位深在正式解码时返回失败。
-- 解码错误或警告（含截断数据）均视为失败。不向标准错误输出库诊断，也不会因普通 JPEG 错误调用 `exit`。
-- 查询失败时 `info` 不变；读取失败时 `imageTemp` 不变，但像素缓冲区可能已被部分写入，不能使用其中结果。容量不足时不写像素。
-- 输入、输出像素和结果结构体不得重叠；调用期间输入必须有效且不能修改。查询与读取之间输入或 mode 改变时，应重新查询并分配。
-- 无全局可变 wrapper 状态，独立调用可并发执行。不应用 EXIF 旋转或 ICC 色彩配置，也不做缩放。
+完整说明见 [minimal/README.md](minimal/README.md)。
 
-### 嵌入式内存说明
+| 项目 | 配置 |
+| --- | --- |
+| 实现 | `src/jpeg_wrapper.c`（普通构建和最简构建共用） |
+| 源文件 | [minimal/sources.txt](minimal/sources.txt)，共 25 个 C 文件 |
+| Include | `include`、`minimal/config`、`third_party/libjpeg` |
+| 命令行宏 | `NO_GETENV` |
+| 配置头 | [minimal/config/jconfig.h](minimal/config/jconfig.h)，无需生成 |
+| 不需要 | SIMD、汇编、TLS、操作系统环境变量、文件系统、PNG/zlib |
 
-外部管理的是**输出像素内存**。libjpeg-turbo 内部仍会通过标准运行库分配解码器、行缓存、渐进式系数等内存；此 API 不保证解码全过程零堆分配。若平台需要所有分配走特殊内存池，必须进一步适配上游内存管理/平台 C 运行库。`pixels_size` 也不等于解码全过程峰值内存；应用应在分配之前设置尺寸/容量上限。
-
-## 构建和测试
-
-需要 C 编译器、CMake（建议 3.18+；上游平台要求见其 BUILDING.md）和构建工具。内置 libjpeg-turbo 固定使用 `WITH_SIMD=OFF`、`REQUIRE_SIMD=OFF` 构建，使用普通 C 解码路径，不编译上游 SIMD/汇编加速模块（包括 x86 SSE/AVX、Arm NEON、RISC-V RVV 等），无需 NASM。配置仅在 wrapper 的构建脚本中完成，不修改上游源码。
+无 CMake 构建：
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+make -f minimal/Makefile -j4
+```
+
+输出 `build-minimal-make/libjpeg_wrapper.a`。交叉编译时传入 `CC`、`AR` 和芯片对应的 `CFLAGS`，配置 CPU 与浮点 ABI。
+
+内存输入、错误处理均由 wrapper 使用标准 libjpeg 回调实现，不引入上游文件输入和默认错误输出。像素内存由外部管理，但解码上下文与 libjpeg 内部仍需要 `calloc/malloc/free`。运行库也需提供 `setjmp/longjmp` 和内存操作。专用内存池的适配说明见移植文档。
+
+## CMake 与测试
+
+根目录构建使用相同的显式文件清单，不调用上游 configure/CMake，不下载依赖：
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=MinSizeRel
+cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ```
 
-wrapper 目标为 `jpeg_wrapper`。在同一 CMake 工程中链接该目标，它会传递所需的 TurboJPEG 依赖。上游不支持 `add_subdirectory`，这里通过 `ExternalProject_Add` 构建原始源码，不修改上游文件。
+静态库为 `build/minimal/libjpeg_wrapper.a`；`JPEGW_BUILD_TESTS=OFF` 关闭测试，GCC/Clang 可用 `JPEGW_SANITIZE=ON` 开启 ASan/UBSan。
+
+独立最简 CMake：
+
+```sh
+cmake -S minimal -B build-minimal -DJPEGW_MINIMAL_TESTS=ON
+cmake --build build-minimal -j4
+ctest --test-dir build-minimal --output-on-failure
+```
+
+纯 Make 主机测试：`make -f minimal/Makefile -j4 check`。测试使用已提交的 JPEG 数组，覆盖像素布局、RGB/RGBA、Alpha、灰度、渐进式、CMYK 拒绝、容量、边界和所有截断位置，不引入编码器。
+
+在已有 CMake 工程中：
 
 ```cmake
+set(JPEGW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(path/to/my-jpeg-wrapper)
 target_link_libraries(your_app PRIVATE jpeg_wrapper)
 ```
 
-`JPEGW_BUILD_TESTS=OFF` 可关闭测试；`JPEGW_USE_BUNDLED=OFF` 可改用系统已安装的 `turbojpeg.h` 和 `libturbojpeg`（TurboJPEG 2.x API 或兼容的 3.x）。链接的库是 **turbojpeg**，不是仅 `jpeg`。系统库模式无法改变现有二进制的编译选项，调用方必须自行确认该库也以 `WITH_SIMD=OFF` 构建。
+头文件接口和实现关键步骤均保留日语注释。运行 `doxygen Doxyfile` 可生成日语接口文档，入口为 `build-docs/html/index.html`。
 
-交叉编译时传入绝对路径的 `-DCMAKE_TOOLCHAIN_FILE=...`，该文件也会传给上游构建；同时用 `-DJPEGW_BUILD_TESTS=OFF` 关闭宿主运行测试。工具链中使用绝对路径定位资源，并选择目标 CPU/ABI 对应的编译选项。关闭上游 SIMD 不会覆盖编译器自身的自动向量化或工具链中的 `-march`、`-mcpu`、FPU/浮点 ABI 设置；若芯片不支持相关指令，需要在工具链中一并限制。不要为目标设备使用宿主机的 `-march=native`。上游其他平台配置见 [BUILDING.md](third_party/libjpeg-turbo/BUILDING.md)。
-
-GCC/Clang 内存检查：
-
-```sh
-cmake -S . -B build-asan -DJPEGW_SANITIZE=ON
-cmake --build build-asan -j
-ctest --test-dir build-asan --output-on-failure
-```
-
-测试覆盖 RGB/RGBA、灰度、渐进式、CMYK 拒绝、宽高和容量、通道值/Alpha、输出边界保护、无效参数和 JPEG 每个截断位置。根目录测试会在内存中生成 JPEG；最简工程的同组测试使用已提交的 JPEG 数组，避免引入编码器。两者均不依赖外部图片。
-
-## 接口文档
-
-头文件中的接口、参数、返回值和内存约定均使用日语 Doxygen 注释，wrapper 关键步骤也使用日语注释。安装 Doxygen 后，在仓库根目录运行 `doxygen Doxyfile`，生成的文档入口为 `build-docs/html/index.html`。
+This software is based in part on the work of the Independent JPEG Group.

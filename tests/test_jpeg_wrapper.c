@@ -2,28 +2,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <turbojpeg.h>
-#ifdef JPEGW_TEST_FIXTURES
 #include "fixtures/jpeg_fixtures.h"
-#endif
+
+typedef enum { BASELINE, PROGRESSIVE, GRAY, CMYK } fixture_kind;
 
 #define CHECK(expr) do { if (!(expr)) { \
     fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #expr); exit(1); \
 } } while (0)
 
-static void exercise(int format, int subsamp, int flags)
+static void exercise(fixture_kind kind)
 {
     enum { W = 17, H = 13 };
     unsigned char input[W * H * 4];
-#ifdef JPEGW_TEST_FIXTURES
     const unsigned char *jpeg = NULL;
-#else
-    unsigned char *jpeg = NULL;
-#endif
-    unsigned long jpeg_size = 0;
-#ifndef JPEGW_TEST_FIXTURES
-    tjhandle compressor = tjInitCompress();
-#endif
+    size_t jpeg_size = 0;
     jpegw_info info;
     jpegw_image image, sentinel;
     unsigned char *pixels, *rgb;
@@ -32,36 +24,25 @@ static void exercise(int format, int subsamp, int flags)
     memset(input, 100, sizeof(input));
     /* 座標で色を変え、行順・チャンネル順の入れ違いも検出します。 */
     for (i = 0; i < W * H; ++i) {
-        if (format == TJPF_RGB) {
+        if (kind == BASELINE || kind == PROGRESSIVE) {
             input[i * 3] = (unsigned char)(20 + (i % W) * 4);
             input[i * 3 + 1] = (unsigned char)(50 + (i / W) * 6);
             input[i * 3 + 2] = 180;
-        } else if (format == TJPF_GRAY) {
+        } else if (kind == GRAY) {
             input[i] = (unsigned char)(40 + (i % W) * 5 + (i / W) * 4);
         }
     }
-#ifdef JPEGW_TEST_FIXTURES
-    (void)subsamp;
-    if (format == TJPF_CMYK) {
+    if (kind == CMYK) {
         jpeg = fixture_cmyk; jpeg_size = sizeof(fixture_cmyk);
-    } else if (format == TJPF_GRAY) {
+    } else if (kind == GRAY) {
         jpeg = fixture_gray; jpeg_size = sizeof(fixture_gray);
-    } else if (flags & TJFLAG_PROGRESSIVE) {
+    } else if (kind == PROGRESSIVE) {
         jpeg = fixture_progressive; jpeg_size = sizeof(fixture_progressive);
     } else {
         jpeg = fixture_rgb; jpeg_size = sizeof(fixture_rgb);
     }
-#else
-    CHECK(compressor != NULL);
-    CHECK(tjCompress2(compressor, input, W, 0, H, format, &jpeg, &jpeg_size,
-                      subsamp, 95, flags) == 0);
-    tjDestroy(compressor);
-#endif
-    if (format == TJPF_CMYK) {
+    if (kind == CMYK) {
         CHECK(jpegw_get_info(jpeg, jpeg_size, JPEGW_RGB, &info) == JPEGW_UNSUPPORTED);
-#ifndef JPEGW_TEST_FIXTURES
-        tjFree(jpeg);
-#endif
         return;
     }
     rgb = malloc(W * H * 3);
@@ -92,7 +73,7 @@ static void exercise(int format, int subsamp, int flags)
                 memcpy(rgb + i * 3, pixels + i * 3, 3);
                 int channel;
                 for (channel = 0; channel < 3; ++channel) {
-                    int expected = format == TJPF_GRAY ? input[i] :
+                    int expected = kind == GRAY ? input[i] :
                                    input[i * 3 + (size_t)channel];
                     CHECK(abs((int)pixels[i * 3 + (size_t)channel] - expected) <= 6);
                 }
@@ -111,9 +92,6 @@ static void exercise(int format, int subsamp, int flags)
         free(pixels);
     }
     free(rgb);
-#ifndef JPEGW_TEST_FIXTURES
-    tjFree(jpeg);
-#endif
 }
 
 int main(void)
@@ -132,10 +110,10 @@ int main(void)
     CHECK(memcmp(&info, &before, sizeof(info)) == 0);
     CHECK(jpegw_read(NULL, bad, sizeof(bad), JPEGW_RGB, bad, 1) == JPEGW_INVALID_ARGUMENT);
     CHECK(jpegw_read(&image, bad, sizeof(bad), JPEGW_RGB, NULL, 1) == JPEGW_INVALID_ARGUMENT);
-    exercise(TJPF_RGB, TJSAMP_420, 0);
-    exercise(TJPF_RGB, TJSAMP_444, TJFLAG_PROGRESSIVE);
-    exercise(TJPF_GRAY, TJSAMP_GRAY, 0);
-    exercise(TJPF_CMYK, TJSAMP_444, 0);
+    exercise(BASELINE);
+    exercise(PROGRESSIVE);
+    exercise(GRAY);
+    exercise(CMYK);
     puts("All wrapper tests passed.");
     return 0;
 }

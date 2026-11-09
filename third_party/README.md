@@ -1,12 +1,14 @@
-# Bundled dependency
+# Bundled dependency — standard IJG libjpeg
 
-- Project: libjpeg-turbo
-- Latest stable release checked: 3.2.1 (2026-11-09)
-- Release: https://github.com/libjpeg-turbo/libjpeg-turbo/releases/tag/3.2.1
-- Official source asset: https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.1/libjpeg-turbo-3.2.1.tar.gz
-- SHA-256: `c27ad72a68da151177929aa969ae773a2da5ac2af9ce946079314fdac8cece7f`
-- Import: complete, unmodified official release tarball contents (not a submodule).
-- License: see `libjpeg-turbo/LICENSE.md` and referenced license files.
+- Project: Independent JPEG Group libjpeg (not libjpeg-turbo)
+- Official website: https://www.ijg.org/
+- Current release checked: 10, released 2026-01-25 (checked 2026-11-09)
+- Official source: https://www.ijg.org/files/jpegsrc.v10.tar.gz
+- Downloaded archive SHA-256: `8b9eaa13242690ebd03e1728ab1edf97a81a78ed6e83624d493655f31ac95ab5`
+- Import: complete, unmodified `jpeg-10` directory from the official archive.
+- License and acknowledgement requirements: see `libjpeg/README`.
 
-All upstream source and build files are preserved. Configuration and build output
-are kept outside this directory. No source patch is applied by the wrapper.
+The wrapper supplies its own `jconfig.h` under `minimal/config`. The original
+upstream source files are preserved. Build output is kept outside this directory.
+
+This software is based in part on the work of the Independent JPEG Group.

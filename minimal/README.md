@@ -1,96 +1,56 @@
-# 嵌入式最简构建与移植清单
+# 标准 IJG libjpeg：嵌入式移植清单
 
-这套工程直接使用 libjpeg-turbo **3.2.1 的 libjpeg 解码接口**，对外仍提供 `include/jpeg_wrapper.h` 中相同的 `jpegw_get_info()`、`jpegw_read()` 和 `jpegw_status_string()`。
+本分支使用 IJG 官方 **libjpeg 10**，源码位于 `third_party/libjpeg`，未做修改。wrapper 只使用标准 libjpeg 解码接口，普通工程与最简工程共用 `src/jpeg_wrapper.c`。
 
-**移植时使用本目录的 `jpeg_wrapper.c`，不要再编译根目录 `src/jpeg_wrapper.c`。两者是同一 API 的替代实现，不能同时链接。** 原有根目录构建保持兼容；本目录不调用它，也不调用上游 CMake。
+## 源文件
 
-仅需 C99 编译器和标准 C 运行库。不依赖 CMake 生成任何头文件，不探测宿主 CPU，不使用汇编、SIMD、编译器内建位扫描、线程局部存储或操作系统环境变量。像素缓冲区仍由调用方分配、释放。解码明确选择整数 IDCT。
+完整列表见 [sources.txt](sources.txt)：共 **25 个 C 文件**，路径均相对于仓库根目录。CMake 与 Makefile 读取同一份清单；迁移到 IDE/厂商 SDK 时逐行加入即可，不要使用目录通配符把所有上游代码都编译进去。
 
-## 1. 到底编译哪些文件
+- `src/jpeg_wrapper.c`：公开 API、严格内存输入 source manager、自定义错误处理、RGB/RGBA 输出。
+- 24 个上游文件：解码入口、控制、标记、Huffman/算术解码、IDCT、颜色转换/采样、量化和内存工具。
 
-唯一清单是 [sources.txt](sources.txt)：每行一个相对于**仓库根目录**的源文件，共 **56 个 `.c`**：
+不编译编码器、转码器、命令行工具、上游默认错误处理 `jerror.c`、文件输入 `jdatasrc.c`。渐进式 Huffman 解码包含在此版上游的 `jdhuff.c` 中。
 
-- `minimal/jpeg_wrapper.c`：1 个对外 API 实现，包含内存输入和错误处理。
-- `third_party/libjpeg-turbo/src/` 及其 `wrapper/`：55 个上游解码依赖。
+上游调度仍引用量化、多个 IDCT 等模块，因此保留清单中的这些符号依赖；wrapper 实际选择 `JDCT_ISLOW` 整数 IDCT。`jidctflt.c` 是上游调度依赖，无硬件 FPU 的芯片应使用软件浮点工具链配置。不要直接删除这些模块，也不要混入其他版本的头文件或源文件。
 
-CMake 和 Makefile 都直接读取这同一份清单，不使用源文件通配符。迁移到 IDE、厂商 SDK、SCons 或自己的 Makefile 时，逐行添加即可；不要把上游整个目录中的 `.c` 全部加入编译。
+只应使用公开的 `jpegw_*` API；本静态库没有提供完整 libjpeg 的编码入口、`jpeg_std_error()`、`jpeg_mem_src()` 等未使用的函数。
 
-上游代码按功能包含：
+如果平台已经提供标准 libjpeg，可只编译 `src/jpeg_wrapper.c` 并链接平台的 libjpeg，不再编译本清单中的 24 个库文件。必须使用该平台库对应的 `jpeglib.h`、`jconfig.h` 和 ABI，不能将本分支的 libjpeg 10 头文件与另一版本库混用。
 
-| 功能 | 对应文件族 |
-| --- | --- |
-| 解码入口、输入控制、JPEG 标记解析 | `jdapimin.c`、`jdapistd-*.c`、`jdinput.c`、`jdmarker.c` |
-| 主控制与图像行缓冲 | `jdmaster.c`、`jdmainct-*.c`、`jdcoefct-*.c`、`jdpostct-*.c` |
-| Huffman、渐进式与算术解码 | `jdhuff.c`、`jdphuff.c`、`jaricom.c`、`jdarith.c` |
-| 无损解码的内部依赖 | `jdlhuff.c`、`jdlossls-*.c`、`jddiffct-*.c` |
-| 颜色转换、采样与量化的内部依赖 | `jdcolor-*.c`、`jdsample-*.c`、`jdmerge-*.c`、`jquant1-*.c`、`jquant2-*.c` |
-| IDCT | `jddctmgr-*.c`、`jidctint-*.c`、`jidctfst-*.c`、`jidctflt-*.c`、`jidctred-*.c` |
-| 内存与公共工具 | `jmemmgr.c`、`jmemnobs.c`、`jcomapi.c`、`jpeg_nbits.c`、`jutils-*.c` |
-
-`src/wrapper/*-8.c`、`*-12.c`、`*-16.c` 会通过 `#include` 编译相应的基础 `.c`。**不要再次单独编译它们包含的基础文件**，也不要在全局强制定义 `BITS_IN_JSAMPLE=8`，否则会破坏不同精度文件的配置。
-
-虽然公开 wrapper 只接受 8 位图像，但上游的公共解码控制代码仍引用多个精度、无损、量化和不同 IDCT 模块。为了保持上游源码不变，本清单保留这些符号依赖；它是一个可独立链接、仅含解码器的移植基线，不声称是理论上最小的二进制。运行 wrapper 时选择整数 IDCT；`jidctflt-*` 是上游调度依赖，不能直接删掉。无硬件 FPU 时须由工具链选择软件浮点 ABI。
-
-不编译：编码器、`turbojpeg.c`、`transupp.c`、PNG、zlib、BMP/PPM 文件读写、命令行工具、SIMD、上游默认错误输出模块 `jerror.c`、文件输入模块 `jdatasrc.c`。内存输入与错误处理已在本目录的 wrapper 中实现，损坏输入返回状态码，不补造 JPEG 结束标记，不调用 `exit()`，不输出诊断。
-
-## 2. include 路径
-
-按下面顺序加入，路径均相对于仓库根目录：
+## Include 路径
 
 ```text
 include
 minimal/config
-third_party/libjpeg-turbo/src
+third_party/libjpeg
 ```
 
-- `include`：对外的 `jpeg_wrapper.h`，应用程序也需要此路径。
-- `minimal/config`：本工程提供的固定配置头 `jconfig.h`、`jconfigint.h`、`jversion.h`。
-- `third_party/libjpeg-turbo/src`：上游公共头、内部头和被包含的模板源文件。
+应用程序只需要 `include`；编译 wrapper 和上游库文件时使用上述全部路径。目录结构要保留。`minimal/config/jconfig.h` 是独立配置文件，不是上游源码补丁，也无需 CMake 生成。
 
-这三个配置头是 wrapper 自己提供的文件，不是对上游源码的修改。不要同时加入另一套 libjpeg 的配置路径或从 PC 构建目录复制配置头。
+## 预定义宏
 
-## 3. 预定义宏与配置值
-
-编译命令/IDE 的预定义宏只需要：
+命令行/IDE 只需要：
 
 ```text
 NO_GETENV
-NO_PUTENV
 ```
 
-C99 示例：
+`jconfig.h` 中的标准 C 配置：
 
-```sh
-cc -std=c99 -Os \
-  -Iinclude -Iminimal/config -Ithird_party/libjpeg-turbo/src \
-  -DNO_GETENV -DNO_PUTENV \
-  -c minimal/jpeg_wrapper.c -o jpeg_wrapper.o
-```
-
-对清单中的所有 `.c` 使用同一组 include 路径与宏。CPU、端序、ABI 等目标宏由交叉编译器提供，不要手工伪造。
-
-固定配置头中的关键值如下，无需再次放进命令行：
-
-| 宏 | 配置与含义 |
+| 宏 | 配置 |
 | --- | --- |
-| `JPEG_LIB_VERSION` | `62`，选择 libjpeg v6b ABI |
-| `LIBJPEG_TURBO_VERSION` | `3.2.1` |
-| `LIBJPEG_TURBO_VERSION_NUMBER` | `3002001` |
-| `BITS_IN_JSAMPLE` | 默认 8；精度 wrapper 源文件可先定义为 12/16 |
-| `D_ARITH_CODING_SUPPORTED` | 8 位构建定义为 1，保留算术解码 |
-| `SIZEOF_SIZE_T` | 根据目标编译器的 `SIZE_MAX` 确定为 4 或 8，禁止写死宿主机值 |
-| `INLINE` | 标准 C99 `inline` |
-| `HIDDEN`、`THREAD_LOCAL`、`FALLTHROUGH` | 空，不依赖扩展属性或 TLS |
-| `WITH_SIMD`、`WITH_SIMDE`、`WITH_PROFILE` | 不定义，关闭相应功能 |
-| `HAVE_BUILTIN_CTZL`、`HAVE_INTRIN_H` | 不定义，使用普通 C 实现 |
-| `C_ARITH_CODING_SUPPORTED` | 不定义，不编译编码器 |
-| `MEM_SRCDST_SUPPORTED` | 不定义；内存输入使用 wrapper 自带的 source manager |
+| `HAVE_PROTOTYPES` | 定义 |
+| `HAVE_UNSIGNED_CHAR` | 定义 |
+| `HAVE_UNSIGNED_SHORT` | 定义 |
+| `HAVE_STDDEF_H` | 定义 |
+| `HAVE_STDLIB_H` | 定义 |
+| `RIGHT_SHIFT_IS_UNSIGNED` | 默认不定义，假定有符号右移为算术右移 |
 
-注意：上游大量使用 `#ifdef WITH_SIMD`。**不能用 `-DWITH_SIMD=0` 代替“不定义”**。这套最小构建不接受 `WITH_SIMD` 等上游 CMake 选项；所有配置以这里的配置头为准。
+IJG 自带的 `jpeglib.h` 定义 `JPEG_LIB_VERSION=100`；`jmorecfg.h` 默认 `JPEG_DATA_PRECISION=8`、`BITS_IN_JSAMPLE=8`。不要在命令行用其他值覆盖，也不要添加 libjpeg-turbo 的 `WITH_SIMD`、`JCS_EXT_*` 等宏。
 
-适用前提：8 位字节、32 位 `int`、32/64 位 `size_t`、正常的有符号算术右移。如果目标编译器对有符号数使用逻辑右移，需要在 `minimal/config/jconfig.h` 中增加 `RIGHT_SHIFT_IS_UNSIGNED=1`。16 位 `int`/`size_t` 平台不在此配置支持范围内。
+目标应提供 8 位字节、32 位 `int`、32/64 位 `size_t`。CPU、端序和 ABI 宏由交叉编译器提供，不手工伪造。如果编译器对有符号数进行逻辑右移，需在 `jconfig.h` 中定义 `RIGHT_SHIFT_IS_UNSIGNED`。
 
-## 4. 完全不使用 CMake
+## 不使用 CMake
 
 仓库根目录执行：
 
@@ -98,9 +58,9 @@ cc -std=c99 -Os \
 make -f minimal/Makefile -j4
 ```
 
-输出：`build-minimal-make/libjpeg_wrapper.a`。不生成配置头，不调用 CMake。
+输出：`build-minimal-make/libjpeg_wrapper.a`。
 
-例如使用 ARM GCC，以下 CPU 选项仅以 Cortex-M3 为例，应替换为实际芯片配置：
+交叉编译示例（CPU 参数以 Cortex-M3 为例，替换为实际芯片）：
 
 ```sh
 make -f minimal/Makefile -j4 \
@@ -109,20 +69,26 @@ make -f minimal/Makefile -j4 \
   CFLAGS='-Os -mcpu=cortex-m3 -mthumb -mfloat-abi=soft -ffunction-sections -fdata-sections'
 ```
 
-最终链接由你的固件工程完成，使用相同的 CPU/ABI 选项。若启用上述 section 选项，可在最终链接时使用 `-Wl,--gc-sections`。本工程不添加 `-march=native`，不启用 LTO，也不要求 NASM、线程库、PNG/zlib 或额外的 `-lm`。
+每个文件使用同样的 include 和宏。例如：
 
-## 5. 最简 CMake 参考工程
+```sh
+cc -std=c99 -Os -DNO_GETENV \
+  -Iinclude -Iminimal/config -Ithird_party/libjpeg \
+  -c src/jpeg_wrapper.c -o jpeg_wrapper.o
+```
 
-CMake 仅用于在 PC 上验证构建清单，或供你对照迁移。它只有一个静态库目标，没有 `ExternalProject_Add`、下载步骤、配置头生成或上游构建脚本。
+最终链接由固件工程完成，使用相同 CPU/ABI。可在支持的工具链中使用 `-Wl,--gc-sections`。本工程不要求额外的 `-lm`、线程库、NASM、PNG/zlib，也不设置 `-march=native` 或 LTO。
+
+## 最简 CMake 参考
 
 ```sh
 cmake -S minimal -B build-minimal -DCMAKE_BUILD_TYPE=MinSizeRel
 cmake --build build-minimal -j4
 ```
 
-输出：`build-minimal/libjpeg_wrapper.a`。
+输出：`build-minimal/libjpeg_wrapper.a`。这是一个静态库目标，读取显式列表；没有外部项目、下载、配置头生成或自动硬件加速探测。
 
-交叉编译参考入口（要求自行安装对应工具链，并按芯片设置 `CMAKE_C_FLAGS`）：
+交叉编译参考入口：
 
 ```sh
 cmake -S minimal -B build-arm \
@@ -130,31 +96,31 @@ cmake -S minimal -B build-arm \
 cmake --build build-arm -j4
 ```
 
-参考工具链文件没有替你选择芯片、FPU、链接脚本或启动文件；这些应复用固件工程的设置。本工程只生成静态库。
+工具链文件仅提供 Generic/ARM GCC 入口。请复用固件工程的 CPU、FPU/浮点 ABI、启动文件及链接脚本配置。未针对特定芯片做实机验证。
 
-## 6. 运行库与内存要求
+## 标准 API 与内存约定
 
-实际使用需要标准 C 的 `malloc`、`calloc`、`free`、内存操作和 `setjmp/longjmp`；不需要文件系统、环境变量或线程 API。上游公共头仍引用 `FILE` 类型并包含 `<stdio.h>`，因此工具链需要提供该头，但此清单不会引入 `fopen/fread/fprintf/exit` 等运行时符号。不要把 `jerror.c` 或 `jdatasrc.c` 加回来。
+`jpegw_get_info()` 自动解析宽高、stride 与所需输出容量；`jpegw_read()` 检查容量后读取。调用方仍需传 JPEG 的有效字节长度。
 
-输出像素由调用方管理。wrapper 的解码上下文通过 `calloc/free` 管理，上游内存管理器也使用 `malloc/free`。如果全部内存都必须来自特殊内存池，需要由平台运行库/链接层提供相应分配函数；仅替换像素 buffer 的申请函数不能替换内部内存分配。不要让同一指针在不同分配器间释放。
+- RGB 使用标准 `JCS_RGB` 输出，每通道 1 Byte。
+- RGBA 先将每行 RGB 写到调用方缓冲区该行的起始位置，再从后往前原地扩展为 RGBA，Alpha 255，不增加整幅像素缓冲区。
+- 灰度、RGB、YCbCr 的 8 位 JPEG（含渐进式）受支持；其他色空间/精度返回 `JPEGW_UNSUPPORTED`。
+- 失败时结构体不变，像素缓冲区可能部分写入；容量不足时不写像素。输出内存由外部释放，旧的 `imageTemp.pixels` 不会被自动释放。
+- 输入、输出和结构体不能重叠。独立调用没有共享的 wrapper 可变状态。
 
-渐进式 JPEG 会需要额外的系数缓冲；`pixels_size` 不是解码峰值内存。应在查询后自行限制宽高和像素容量。当前公开 API 保持不变，不包含全局内存配额参数。
+解码上下文使用 `calloc/free`，上游内部使用 `malloc/free`，另需标准内存操作和 `setjmp/longjmp`。特殊内存池需要在平台运行库/链接层统一适配这些函数；不要混用分配器。`pixels_size` 不是解码峰值内存，特别是渐进式 JPEG，应由应用设置尺寸/容量上限。
 
-仅应使用 `jpegw_*` API。本目录没有提供完整 libjpeg/TurboJPEG 的全部入口（如 `jpeg_std_error`、`jpeg_mem_src` 或编码函数）。普通 root 构建仍提供原有后端，不要把两个构建产生的库同时链接进同一程序。
+不需要文件系统、环境变量、TLS 或线程 API。上游头文件需要 `<stdio.h>` 中的 `FILE` 类型，但本清单不引入 `fopen/fread/fprintf/exit` 运行时符号。错误通过回调返回状态码；不补造截断 JPEG 的结束标记，不向终端输出。
 
-最小后端会在头查询时对非 8 位精度返回 `JPEGW_UNSUPPORTED`；原有 TurboJPEG 后端可能在正式读取时才拒绝。其余公开的数据布局、所有权、容量检查和失败时结构体不变的约定相同。
-
-## 7. 主机测试
+## 主机测试
 
 ```sh
 cmake -S minimal -B build-minimal -DJPEGW_MINIMAL_TESTS=ON
 cmake --build build-minimal -j4
 ctest --test-dir build-minimal --output-on-failure
-
-# 同一组测试，不使用 CMake
 make -f minimal/Makefile -j4 check
 ```
 
-测试使用已提交的 JPEG 数组，不链接编码器。涵盖 RGB/RGBA、灰度、渐进式 JPEG、CMYK 拒绝、容量和保护区、像素顺序、Alpha 及每个位置的截断。测试程序与数据只用于验证，不在库的源文件清单中。
+主机测试使用已提交的 JPEG 数组，不将测试或编码器加入静态库。根目录可用 `JPEGW_SANITIZE=ON` 运行 ASan/UBSan。
 
-如需重新生成测试数组，在原有根目录工程已构建的前提下，使用主机编译器编译 `tests/generate_fixtures.c`，链接该工程的 `libturbojpeg.a`，把其标准输出保存到 `tests/fixtures/jpeg_fixtures.h`。生成器不属于移植代码。
+可选的 `tests/generate_fixtures.c` 使用标准 libjpeg 编码 API 重新生成数组；它需要主机上包含编码器的完整 IJG libjpeg，不属于此解码库的移植文件。现有数组无需重新生成。

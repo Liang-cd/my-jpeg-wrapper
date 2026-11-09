@@ -1,106 +1,224 @@
 #include "jpeg_wrapper.h"
 
 #include <limits.h>
-#include <turbojpeg.h>
+#include <setjmp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <jpeglib.h>
+#include <jerror.h>
 
-/* NULL・空データ・非対応の出力形式をライブラリ呼び出し前に排除します。 */
-static int valid_input(const void *data, size_t size, jpegw_mode mode)
+/* setjmp 後に変更されるデコーダはヒープに置き、longjmp 後も有効に保ちます。 */
+typedef struct {
+    struct jpeg_decompress_struct decoder;
+    struct jpeg_error_mgr error;
+    struct jpeg_source_mgr source;
+    jmp_buf jump;
+    jpegw_status failure;
+} jpegw_context;
+
+/* libjpeg の exit() を使わず、すべての致命的エラーを呼び出し元へ返します。 */
+static void fail(j_common_ptr decoder)
 {
-    return data != NULL && size != 0 &&
-           (mode == JPEGW_RGB || mode == JPEGW_RGBA);
+    jpegw_context *context = (jpegw_context *)decoder->client_data;
+    context->failure = decoder->err->msg_code == JERR_OUT_OF_MEMORY ?
+                       JPEGW_DECODER_ERROR : JPEGW_INVALID_JPEG;
+    longjmp(context->jump, 1);
 }
 
-/* 問い合わせと正式な展開で同じ寸法・容量チェックを使用します。 */
-static jpegw_status inspect(tjhandle decoder, const void *data, size_t size,
-                            jpegw_mode mode, jpegw_info *info)
+/* 途中で切れた JPEG などの警告も失敗とします。診断は標準出力へ出しません。 */
+static void emit(j_common_ptr decoder, int level)
 {
-    int width, height, subsamp, colorspace;
-    size_t channels = (size_t)mode;
-    /* TurboJPEG 2.x 互換 API の入力長は unsigned long です。 */
-    if (size > ULONG_MAX)
+    if (level < 0)
+        fail(decoder);
+}
+
+static void quiet(j_common_ptr decoder)
+{
+    (void)decoder;
+}
+
+/* 文字列テーブルや fprintf/exit に依存しないエラーマネージャです。 */
+static void format(j_common_ptr decoder, char *buffer)
+{
+    (void)decoder;
+    buffer[0] = '\0';
+}
+
+static void reset(j_common_ptr decoder)
+{
+    decoder->err->num_warnings = 0;
+    decoder->err->msg_code = 0;
+}
+
+/* メモリ入力専用です。stdio 入力モジュールをリンクする必要はありません。 */
+static void source_noop(j_decompress_ptr decoder)
+{
+    (void)decoder;
+}
+
+static boolean source_empty(j_decompress_ptr decoder)
+{
+    /* 終端の補完はせず、入力不足を必ずエラーとして返します。 */
+    decoder->err->msg_code = JERR_INPUT_EOF;
+    fail((j_common_ptr)decoder);
+    return FALSE;
+}
+
+static void source_skip(j_decompress_ptr decoder, long count)
+{
+    if (count > 0) {
+        if ((unsigned long)count > decoder->src->bytes_in_buffer)
+            (void)source_empty(decoder);
+        decoder->src->next_input_byte += (size_t)count;
+        decoder->src->bytes_in_buffer -= (size_t)count;
+    }
+}
+
+/* 問い合わせと展開で共通のヘッダ解析・容量チェックを行います。 */
+static jpegw_status process(const void *data, size_t length, jpegw_mode mode,
+                            jpegw_info *info, void *pixels, size_t capacity)
+{
+    jpegw_context *context;
+    struct jpeg_decompress_struct *decoder;
+    jpegw_info result;
+    jpegw_status status = JPEGW_OK;
+    if (!data || !length || (mode != JPEGW_RGB && mode != JPEGW_RGBA))
+        return JPEGW_INVALID_ARGUMENT;
+    if (length > ULONG_MAX)
         return JPEGW_SIZE_OVERFLOW;
-    if (tjDecompressHeader3(decoder, (const unsigned char *)data,
-                            (unsigned long)size, &width, &height,
-                            &subsamp, &colorspace) != 0)
-        return JPEGW_INVALID_JPEG;
-    /* CMYK/YCCK は単純な RGB 変換で色が保証できないため拒否します。 */
-    if (colorspace != TJCS_RGB && colorspace != TJCS_YCbCr &&
-        colorspace != TJCS_GRAY)
-        return JPEGW_UNSUPPORTED;
-    if (width <= 0 || height <= 0)
-        return JPEGW_INVALID_JPEG;
-    /* 乗算の前に size_t と TurboJPEG の int 型 stride の上限を確認します。 */
-    if ((size_t)width > SIZE_MAX / channels ||
-        (size_t)width > (size_t)INT_MAX / channels)
-        return JPEGW_SIZE_OVERFLOW;
-    info->stride = (size_t)width * channels;
-    if ((size_t)height > SIZE_MAX / info->stride)
-        return JPEGW_SIZE_OVERFLOW;
-    info->width = (uint32_t)width;
-    info->height = (uint32_t)height;
-    info->mode = mode;
-    info->pixels_size = info->stride * (size_t)height;
-    return JPEGW_OK;
+    context = (jpegw_context *)calloc(1, sizeof(*context));
+    if (!context)
+        return JPEGW_DECODER_ERROR;
+    decoder = &context->decoder;
+    decoder->err = &context->error;
+    context->error.error_exit = fail;
+    context->error.emit_message = emit;
+    context->error.output_message = quiet;
+    context->error.format_message = format;
+    context->error.reset_error_mgr = reset;
+    decoder->client_data = context;
+
+    /* 生成途中の失敗も、初期化済みの mem ポインタから安全に解放できます。 */
+    if (setjmp(context->jump)) {
+        jpegw_status failure = context->failure;
+        jpeg_destroy_decompress(&context->decoder);
+        free(context);
+        return failure;
+    }
+    jpeg_create_decompress(decoder);
+    context->source.init_source = source_noop;
+    context->source.fill_input_buffer = source_empty;
+    context->source.skip_input_data = source_skip;
+    context->source.resync_to_restart = jpeg_resync_to_restart;
+    context->source.term_source = source_noop;
+    context->source.next_input_byte = (const JOCTET *)data;
+    context->source.bytes_in_buffer = length;
+    decoder->src = &context->source;
+    if (jpeg_read_header(decoder, TRUE) != JPEG_HEADER_OK) {
+        status = JPEGW_INVALID_JPEG;
+        goto done;
+    }
+    /* 公開 API は 8 ビット RGB/RGBA 専用です。CMYK の暗黙変換はしません。 */
+    if (decoder->data_precision != 8 ||
+        (decoder->jpeg_color_space != JCS_RGB &&
+         decoder->jpeg_color_space != JCS_YCbCr &&
+         decoder->jpeg_color_space != JCS_GRAYSCALE)) {
+        status = JPEGW_UNSUPPORTED;
+        goto done;
+    }
+    if (!decoder->image_width || !decoder->image_height) {
+        status = JPEGW_INVALID_JPEG;
+        goto done;
+    }
+    /* 乗算より前にサイズを検証し、元の wrapper と同じ範囲を許可します。 */
+    if ((size_t)decoder->image_width > SIZE_MAX / (size_t)mode ||
+        (size_t)decoder->image_width > (size_t)INT_MAX / (size_t)mode) {
+        status = JPEGW_SIZE_OVERFLOW;
+        goto done;
+    }
+    result.width = decoder->image_width;
+    result.height = decoder->image_height;
+    result.mode = mode;
+    result.stride = (size_t)result.width * (size_t)mode;
+    if ((size_t)result.height > SIZE_MAX / result.stride) {
+        status = JPEGW_SIZE_OVERFLOW;
+        goto done;
+    }
+    result.pixels_size = result.stride * (size_t)result.height;
+    if (pixels) {
+        if (capacity < result.pixels_size) {
+            status = JPEGW_BUFFER_TOO_SMALL;
+            goto done;
+        }
+        /* 標準 libjpeg の整数 IDCT と RGB 出力を明示します。 */
+        decoder->dct_method = JDCT_ISLOW;
+        decoder->out_color_space = JCS_RGB;
+        if (!jpeg_start_decompress(decoder) ||
+            decoder->output_width != result.width ||
+            decoder->output_height != result.height ||
+            decoder->output_components != 3) {
+            status = JPEGW_INVALID_JPEG;
+            goto done;
+        }
+        /* 追加のピクセルバッファは作らず、呼び出し元の領域へ 1 行ずつ展開します。 */
+        while (decoder->output_scanline < decoder->output_height) {
+            JSAMPROW row = (unsigned char *)pixels +
+                          (size_t)decoder->output_scanline * result.stride;
+            if (jpeg_read_scanlines(decoder, &row, 1) != 1) {
+                status = JPEGW_INVALID_JPEG;
+                goto done;
+            }
+            if (mode == JPEGW_RGBA) {
+                size_t x = result.width;
+                /* 後ろから拡張すれば、未処理の RGB データを上書きしません。 */
+                while (x > 0) {
+                    unsigned char r, g, b;
+                    --x;
+                    r = row[x * 3];
+                    g = row[x * 3 + 1];
+                    b = row[x * 3 + 2];
+                    row[x * 4] = r;
+                    row[x * 4 + 1] = g;
+                    row[x * 4 + 2] = b;
+                    row[x * 4 + 3] = 255;
+                }
+            }
+        }
+        if (!jpeg_finish_decompress(decoder)) {
+            status = JPEGW_INVALID_JPEG;
+            goto done;
+        }
+    }
+    /* ヘッダ問い合わせでも展開でも、成功した場合に限り結果を更新します。 */
+    *info = result;
+done:
+    jpeg_destroy_decompress(decoder);
+    free(context);
+    return status;
 }
 
 jpegw_status jpegw_get_info(const void *jpeg_data, size_t jpeg_size,
                             jpegw_mode mode, jpegw_info *info)
 {
-    tjhandle decoder;
-    jpegw_info result;
-    jpegw_status status;
-    if (!info || !valid_input(jpeg_data, jpeg_size, mode))
+    if (!info)
         return JPEGW_INVALID_ARGUMENT;
-    if (jpeg_size > ULONG_MAX)
-        return JPEGW_SIZE_OVERFLOW;
-    /* デコーダは呼び出しごとに生成し、共有状態を持たせません。 */
-    decoder = tjInitDecompress();
-    if (!decoder)
-        return JPEGW_DECODER_ERROR;
-    status = inspect(decoder, jpeg_data, jpeg_size, mode, &result);
-    /* エラー経路でも内部リソースを必ず解放します。出力バッファは解放しません。 */
-    tjDestroy(decoder);
-    /* 成功した場合に限り、呼び出し元の構造体を更新します。 */
-    if (status == JPEGW_OK)
-        *info = result;
-    return status;
+    return process(jpeg_data, jpeg_size, mode, info, NULL, 0);
 }
 
 jpegw_status jpegw_read(jpegw_image *image, const void *jpeg_data,
                         size_t jpeg_size, jpegw_mode mode,
                         void *pixels, size_t pixels_capacity)
 {
-    tjhandle decoder;
     jpegw_info info;
     jpegw_status status;
-    if (!image || !pixels || !valid_input(jpeg_data, jpeg_size, mode))
+    if (!image || !pixels)
         return JPEGW_INVALID_ARGUMENT;
-    if (jpeg_size > ULONG_MAX)
-        return JPEGW_SIZE_OVERFLOW;
-    /* デコーダは呼び出しごとに生成し、共有状態を持たせません。 */
-    decoder = tjInitDecompress();
-    if (!decoder)
-        return JPEGW_DECODER_ERROR;
-    status = inspect(decoder, jpeg_data, jpeg_size, mode, &info);
-    /* 出力先の容量は、現在の入力から再計算した値で検証します。 */
-    if (status == JPEGW_OK && pixels_capacity < info.pixels_size)
-        status = JPEGW_BUFFER_TOO_SMALL;
-    /* 切り詰めなどの警告も失敗とし、不完全な画像を成功扱いしません。 */
-    if (status == JPEGW_OK &&
-        tjDecompress2(decoder, (const unsigned char *)jpeg_data,
-                      (unsigned long)jpeg_size, (unsigned char *)pixels,
-                      (int)info.width, (int)info.stride, (int)info.height,
-                      mode == JPEGW_RGB ? TJPF_RGB : TJPF_RGBA,
-                      TJFLAG_STOPONWARNING) != 0)
-        status = JPEGW_INVALID_JPEG;
-    /* エラー経路でも内部リソースを必ず解放します。出力バッファは解放しません。 */
-    tjDestroy(decoder);
-    /* 展開に成功した場合に限り、画像メタデータと出力ポインタを設定します。 */
+    status = process(jpeg_data, jpeg_size, mode, &info, pixels, pixels_capacity);
     if (status == JPEGW_OK) {
         image->width = info.width;
         image->height = info.height;
+        image->mode = info.mode;
         image->pixels = (unsigned char *)pixels;
-        image->mode = mode;
     }
     return status;
 }
@@ -111,7 +229,7 @@ const char *jpegw_status_string(jpegw_status status)
     case JPEGW_OK: return "success";
     case JPEGW_INVALID_ARGUMENT: return "invalid argument";
     case JPEGW_INVALID_JPEG: return "invalid or damaged JPEG";
-    case JPEGW_UNSUPPORTED: return "unsupported JPEG colorspace";
+    case JPEGW_UNSUPPORTED: return "unsupported JPEG colorspace or precision";
     case JPEGW_SIZE_OVERFLOW: return "pixel size exceeds platform limits";
     case JPEGW_BUFFER_TOO_SMALL: return "pixel buffer too small";
     case JPEGW_DECODER_ERROR: return "cannot create JPEG decoder";
