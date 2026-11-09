@@ -4,6 +4,10 @@ C99 编写的 libjpeg-turbo 只读 wrapper。输入内存中的 JPEG，输出连
 
 仓库已包含官方 **libjpeg-turbo 3.2.1** 完整源码（`third_party/libjpeg-turbo`），无需另外下载。上游版本、提交号和许可证位置见 [third_party/README.md](third_party/README.md)。
 
+## 嵌入式无 CMake 移植
+
+请优先使用 [minimal/README.md](minimal/README.md) 中的独立最简工程：提供完整的 56 个源文件清单、3 个 include 路径、所需预定义宏、固定配置头、GNU Makefile 和最简 CMake。该后端直接调用 libjpeg 解码器，不依赖 TurboJPEG、编码器、PNG/zlib、SIMD 或文件系统；对外的 `jpegw_*` API 不变。具体差异与运行库要求见该文档。
+
 ## 使用
 
 ```c
@@ -89,7 +93,7 @@ cmake --build build-asan -j
 ctest --test-dir build-asan --output-on-failure
 ```
 
-测试覆盖 RGB/RGBA、灰度、渐进式、CMYK 拒绝、宽高和容量、通道值/Alpha、输出边界保护、无效参数和 JPEG 每个截断位置。测试会在内存中生成 JPEG，不依赖外部图片。
+测试覆盖 RGB/RGBA、灰度、渐进式、CMYK 拒绝、宽高和容量、通道值/Alpha、输出边界保护、无效参数和 JPEG 每个截断位置。根目录测试会在内存中生成 JPEG；最简工程的同组测试使用已提交的 JPEG 数组，避免引入编码器。两者均不依赖外部图片。
 
 ## 接口文档
 

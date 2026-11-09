@@ -18,3 +18,18 @@ jobs:
           test "$(sed -n 's/^REQUIRE_SIMD:BOOL=//p' build/libjpeg-turbo-build/CMakeCache.txt)" = "OFF"
           ! grep -Eq '^#define[[:space:]]+WITH_SIMD[[:space:]]+1' build/libjpeg-turbo-build/jconfig.h
       - run: ctest --test-dir build --output-on-failure
+
+  minimal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S minimal -B build-minimal -DJPEGW_MINIMAL_TESTS=ON -DCMAKE_BUILD_TYPE=MinSizeRel
+      - run: cmake --build build-minimal -j 2
+      - run: ctest --test-dir build-minimal --output-on-failure
+      - name: Verify no file or environment API dependencies
+        run: |
+          ! nm -u build-minimal/jpeg_wrapper_link_test | grep -Eq '(fopen|fread|fprintf|snprintf|exit|stderr|getenv|putenv|__tls_get_addr)(@|$)'
+      - run: make -f minimal/Makefile -j2 check
+      - run: cmake -S minimal -B build-minimal-asan -DJPEGW_MINIMAL_TESTS=ON '-DCMAKE_C_FLAGS=-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer'
+      - run: cmake --build build-minimal-asan -j 2
+      - run: ctest --test-dir build-minimal-asan --output-on-failure

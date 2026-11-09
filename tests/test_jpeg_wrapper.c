@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <turbojpeg.h>
+#ifdef JPEGW_TEST_FIXTURES
+#include "fixtures/jpeg_fixtures.h"
+#endif
 
 #define CHECK(expr) do { if (!(expr)) { \
     fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #expr); exit(1); \
@@ -12,9 +15,15 @@ static void exercise(int format, int subsamp, int flags)
 {
     enum { W = 17, H = 13 };
     unsigned char input[W * H * 4];
+#ifdef JPEGW_TEST_FIXTURES
+    const unsigned char *jpeg = NULL;
+#else
     unsigned char *jpeg = NULL;
+#endif
     unsigned long jpeg_size = 0;
+#ifndef JPEGW_TEST_FIXTURES
     tjhandle compressor = tjInitCompress();
+#endif
     jpegw_info info;
     jpegw_image image, sentinel;
     unsigned char *pixels, *rgb;
@@ -31,13 +40,28 @@ static void exercise(int format, int subsamp, int flags)
             input[i] = (unsigned char)(40 + (i % W) * 5 + (i / W) * 4);
         }
     }
+#ifdef JPEGW_TEST_FIXTURES
+    (void)subsamp;
+    if (format == TJPF_CMYK) {
+        jpeg = fixture_cmyk; jpeg_size = sizeof(fixture_cmyk);
+    } else if (format == TJPF_GRAY) {
+        jpeg = fixture_gray; jpeg_size = sizeof(fixture_gray);
+    } else if (flags & TJFLAG_PROGRESSIVE) {
+        jpeg = fixture_progressive; jpeg_size = sizeof(fixture_progressive);
+    } else {
+        jpeg = fixture_rgb; jpeg_size = sizeof(fixture_rgb);
+    }
+#else
     CHECK(compressor != NULL);
     CHECK(tjCompress2(compressor, input, W, 0, H, format, &jpeg, &jpeg_size,
                       subsamp, 95, flags) == 0);
     tjDestroy(compressor);
+#endif
     if (format == TJPF_CMYK) {
         CHECK(jpegw_get_info(jpeg, jpeg_size, JPEGW_RGB, &info) == JPEGW_UNSUPPORTED);
+#ifndef JPEGW_TEST_FIXTURES
         tjFree(jpeg);
+#endif
         return;
     }
     rgb = malloc(W * H * 3);
@@ -87,7 +111,9 @@ static void exercise(int format, int subsamp, int flags)
         free(pixels);
     }
     free(rgb);
+#ifndef JPEGW_TEST_FIXTURES
     tjFree(jpeg);
+#endif
 }
 
 int main(void)
